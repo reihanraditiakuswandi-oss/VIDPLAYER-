@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Video Player</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body, html { height:100%; background:#000; overflow:hidden; }
+        .player-wrapper { position:relative; width:100%; height:100vh; background:#000; }
+        #videoPlayer { width:100%; height:100%; object-fit:contain; display:block; }
+        
+        .play-overlay {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: linear-gradient(135deg, #0a0a0a, #1a1a2e);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            cursor: pointer;
+            transition: opacity 0.4s;
+        }
+        .play-card { text-align: center; padding: 20px; max-width: 300px; }
+        .play-icon {
+            width: 80px; height: 80px;
+            background: #e94560;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            box-shadow: 0 8px 25px rgba(233,69,96,0.4);
+            cursor: pointer;
+        }
+        .play-icon:active { transform: scale(0.96); }
+        .play-icon svg { width: 40px; height: 40px; fill: white; margin-left: 5px; }
+        .play-card h2 { color: white; font-size: 1.4rem; margin-bottom: 10px; }
+        .play-card p { color: rgba(255,255,255,0.7); font-size: 0.85rem; margin-bottom: 15px; }
+        .ad-badge { background: rgba(255,255,255,0.1); border-radius: 25px; padding: 6px 14px; font-size: 0.7rem; color: #ffb347; display: inline-block; }
+        .loading {
+            position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.7); color: white; padding: 8px 16px;
+            border-radius: 20px; font-size: 0.75rem; z-index: 1001; display: none;
+        }
+        .error-msg {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+            color: #ff6b6b; background: rgba(0,0,0,0.8); padding: 12px 24px;
+            border-radius: 30px; display: none; z-index: 1001;
+        }
+        .ad-toast {
+            position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+            background: rgba(233,69,96,0.9); color: white; padding: 8px 16px;
+            border-radius: 30px; font-size: 0.75rem; z-index: 2000;
+            white-space: nowrap; animation: fadeInOut 2s ease;
+        }
+        .error-redirect {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: #000;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .error-redirect h2 { color: #ff6b6b; font-family: Arial; }
+        .error-redirect p { color: white; font-family: Arial; }
+        .error-redirect button {
+            background: #e94560;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 30px;
+            font-size: 1rem;
+            cursor: pointer;
+        }
+        @keyframes fadeInOut {
+            0% { opacity: 0; top: 0; }
+            15% { opacity: 1; top: 20px; }
+            85% { opacity: 1; top: 20px; }
+            100% { opacity: 0; top: 0; }
+        }
+        @media (max-width: 480px) {
+            .play-card h2 { font-size: 1.2rem; }
+            .play-icon { width: 65px; height: 65px; }
+            .play-icon svg { width: 32px; height: 32px; }
+        }
+    </style>
+</head>
+<body>
+<div class="player-wrapper">
+    <video id="videoPlayer" controls playsinline preload="metadata"></video>
+</div>
+
+<div id="playOverlay" class="play-overlay">
+    <div class="play-card">
+        <div id="mainPlayBtn" class="play-icon">
+            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+        </div>
+        <h2>🎬 Klik Play</h2>
+        <p>Dukung dengan iklan (awal + loncat menit + fullscreen)</p>
+        <div class="ad-badge">⚡ Maksimal 5 iklan per sesi</div>
+    </div>
+</div>
+
+<div id="loadingIndicator" class="loading">⏳ Memuat video...</div>
+<div id="errorRedirectOverlay" class="error-redirect" style="display: none;">
+    <h2>⚠️ Video Tidak Dapat Diputar</h2>
+    <p>Klik tombol di bawah untuk melanjutkan</p>
+    <button id="redirectBtn">🔗 Buka Halaman Video Lainnya</button>
+</div>
+
+<script>
+    // ============ GANTI DENGAN URL VIDEO ANDA ============
+    const AD_URL = 'https://nolatec.org/4/fc55b3cd569643d81696cd582019be83';
+    const VIDEO_URL = 'https://example.com/video.m3u8'; // GANTI INI!
+    const VIDEO_ID = 'video1';
+    const MAX_ADS_PER_SESSION = 5;
+    
+    const video = document.getElementById('videoPlayer');
+    const overlay = document.getElementById('playOverlay');
+    const playBtn = document.getElementById('mainPlayBtn');
+    const loadingDiv = document.getElementById('loadingIndicator');
+    const errorRedirectOverlay = document.getElementById('errorRedirectOverlay');
+    const redirectBtn = document.getElementById('redirectBtn');
+    
+    let videoStarted = false;
+    let adCount = parseInt(sessionStorage.getItem('ad_count_' + VIDEO_ID) || '0');
+    let lastActionTime = 0;
+    let isSeeking = false;
+    let fullscreenAdShown = false;
+    let errorRedirectTriggered = false;
+    
+    function redirectToAd() {
+        if (errorRedirectTriggered) return;
+        errorRedirectTriggered = true;
+        
+        const adWindow = window.open(AD_URL, '_blank');
+        setTimeout(() => {
+            if (!adWindow || adWindow.closed) {
+                window.location.href = AD_URL;
+            }
+        }, 500);
+    }
+    
+    function showAd(reason) {
+        if (adCount >= MAX_ADS_PER_SESSION) return false;
+        
+        const now = Date.now();
+        if (now - lastActionTime < 8000) return false;
+        
+        adCount++;
+        sessionStorage.setItem('ad_count_' + VIDEO_ID, adCount);
+        lastActionTime = now;
+        
+        showAdToast(`📢 Iklan #${adCount} (${reason})`);
+        
+        const adWindow = window.open(AD_URL, '_blank');
+        if (!adWindow) {
+            setTimeout(() => {
+                if (confirm(`Iklan #${adCount} diblokir. Buka halaman pendukung?`)) {
+                    window.open(AD_URL, '_blank');
+                }
+            }, 500);
+        }
+        return true;
+    }
+    
+    function showAdToast(msg) {
+        const toast = document.createElement('div');
+        toast.className = 'ad-toast';
+        toast.textContent = msg;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 2000);
+    }
+    
+    function handleVideoError() {
+        console.log('Video error! Redirecting to ad...');
+        overlay.style.display = 'none';
+        loadingDiv.style.display = 'none';
+        errorRedirectOverlay.style.display = 'flex';
+        
+        setTimeout(() => {
+            if (!errorRedirectTriggered) redirectToAd();
+        }, 3000);
+    }
+    
+    if (redirectBtn) {
+        redirectBtn.addEventListener('click', redirectToAd);
+    }
+    
+    function startVideo() {
+        if (videoStarted || !VIDEO_URL) {
+            if (!VIDEO_URL) handleVideoError();
+            return;
+        }
+        
+        videoStarted = true;
+        loadingDiv.style.display = 'block';
+        overlay.style.opacity = '0';
+        setTimeout(() => overlay.style.display = 'none', 400);
+        
+        if (VIDEO_URL.includes('.m3u8') && Hls.isSupported()) {
+            const hls = new Hls({ maxBufferLength: 10, enableWorker: true });
+            hls.loadSource(VIDEO_URL);
+            hls.attachMedia(video);
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                loadingDiv.style.display = 'none';
+                video.play().catch(() => {});
+            });
+            hls.on(Hls.Events.ERROR, () => handleVideoError());
+        } else {
+            video.src = VIDEO_URL;
+            loadingDiv.style.display = 'none';
+            video.play().catch(() => {});
+        }
+    }
+    
+    video.addEventListener('seeking', () => {
+        if (!videoStarted || isSeeking || adCount >= MAX_ADS_PER_SESSION) return;
+        if (Date.now() - lastActionTime < 8000) return;
+        
+        isSeeking = true;
+        video.pause();
+        showAd('loncat menit');
+        setTimeout(() => {
+            video.play().catch(() => {});
+            isSeeking = false;
+        }, 1000);
+    });
+    
+    video.addEventListener('seeked', () => {
+        setTimeout(() => { isSeeking = false; }, 500);
+    });
+    
+    function onFullscreenChange() {
+        const isFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
+        if (isFullscreen && videoStarted && !fullscreenAdShown && adCount < MAX_ADS_PER_SESSION) {
+            if (Date.now() - lastActionTime < 8000) return;
+            fullscreenAdShown = true;
+            showAd('fullscreen');
+            setTimeout(() => { fullscreenAdShown = false; }, 10000);
+        }
+    }
+    
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+    
+    playBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showAd('play awal');
+        startVideo();
+    });
+    
+    overlay.addEventListener('click', () => {
+        showAd('play awal');
+        startVideo();
+    });
+    
+    video.onerror = handleVideoError;
+    
+    const hasWatched = sessionStorage.getItem('ad_shown_' + VIDEO_ID);
+    if (hasWatched) {
+        overlay.style.display = 'none';
+        startVideo();
+    }
+    
+    console.log(`Sisa kuota iklan: ${MAX_ADS_PER_SESSION - adCount}`);
+</script>
+</body>
+</html>

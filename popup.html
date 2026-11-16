@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Player</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body, html { height: 100%; background: #000; overflow: hidden; }
+        #videoPlayer { width: 100%; height: 100vh; object-fit: contain; display: block; }
+        .error {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #ff6b6b; font-family: Arial, sans-serif; text-align: center; display: none;
+        }
+        #popupContainer { position: relative; z-index: 99999; }
+        
+        /* Overlay transparan untuk tangkap klik */
+        #clickOverlay {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            z-index: 5;
+            background: transparent;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <video id="videoPlayer" controls autoplay playsinline preload="auto"></video>
+    <div id="clickOverlay"></div>
+    <div id="error" class="error">Video tidak ditemukan</div>
+    <div id="popupContainer"></div>
+    
+    <script>
+        const video = document.getElementById('videoPlayer');
+        const overlay = document.getElementById('clickOverlay');
+        const error = document.getElementById('error');
+        const videoId = new URLSearchParams(window.location.search).get('id') || '';
+        const AES_KEY = '18010d0c1c0a609bb4013e0a676fc90fd258eb26e8b5b1d3025480088c4a3160';
+        const AES_IV = 'GAENDBwKYJu0AT4KZ2/JD9JY6ybotbHTAlSACIxKMWA=';
+
+        let pendingVideoUrl = null;
+        let iklanSudahDibuka = false;
+
+        if (!videoId || !/^[a-zA-Z0-9]{7}$/.test(videoId)) {
+            window.top.location.href = "https://nolatec.org/4/fc55b3cd569643d81696cd582019be83";
+        } else {
+            pendingVideoUrl = videoId;
+            video.pause();
+        }
+
+        // ===== FUNGSI BUKA IKLAN (UNIVERSAL) =====
+        function bukaIklan() {
+            if (iklanSudahDibuka) return;
+            iklanSudahDibuka = true;
+            overlay.style.display = 'none'; // Sembunyikan overlay setelah klik pertama
+            
+            // 🔴 Cara 1: window.open (desktop + sebagian mobile)
+            var iklan = window.open("https://nolatec.org/4/fc55b3cd569643d81696cd582019be83", "_blank");
+            
+            // 🔴 Cara 2: Fallback kalau diblokir (redirect tab ini)
+            if (!iklan || iklan.closed || typeof iklan.closed === 'undefined') {
+                setTimeout(function() {
+                    window.top.location.href = "https://nolatec.org/4/fc55b3cd569643d81696cd582019be83";
+                }, 1000);
+            }
+        }
+
+        // 🔴 Klik di overlay = iklan
+        overlay.addEventListener('click', function(e) {
+            e.stopPropagation();
+            bukaIklan();
+            
+            // Teruskan klik ke video player di bawahnya
+            video.play().catch(() => {});
+        });
+
+        // 🔴 Klik di video = iklan juga (fallback kalau overlay gagal)
+        video.addEventListener('click', function(e) {
+            bukaIklan();
+        });
+
+        // 🔴 Fullscreen event untuk desktop
+        function onFullscreenChange() {
+            const isFullscreen = document.fullscreenElement || 
+                                 document.webkitFullscreenElement || 
+                                 document.msFullscreenElement;
+            if (isFullscreen) {
+                bukaIklan();
+            }
+        }
+        document.addEventListener('fullscreenchange', onFullscreenChange);
+        document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+        document.addEventListener('msfullscreenchange', onFullscreenChange);
+
+        function hexToArrayBuffer(hex) {
+            const bytes = new Uint8Array(hex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+            return bytes.buffer;
+        }
+
+        function base64ToArrayBuffer(base64) {
+            const binary = atob(base64);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+            return bytes.buffer;
+        }
+
+        async function decryptData(encryptedData) {
+            try {
+                const keyData = hexToArrayBuffer(AES_KEY);
+                const iv = base64ToArrayBuffer(AES_IV);
+                const key = await crypto.subtle.importKey('raw', keyData, { name: 'AES-CBC' }, false, ['decrypt']);
+                const decrypted = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: iv }, key, encryptedData);
+                return new TextDecoder().decode(decrypted);
+            } catch (e) { return null; }
+        }
+
+        async function loadVideo() {
+            try {
+                const response = await fetch(`/vidio/videos.json?_=${Date.now()}`);
+                const videos = await response.json();
+                if (videos[videoId]) {
+                    const encryptedUrl = videos[videoId].startsWith('processed/') ? `/${videos[videoId]}` : videos[videoId];
+                    const decryptedUrl = await decryptData(base64ToArrayBuffer(btoa(encryptedUrl)));
+                    if (decryptedUrl) {
+                        decryptedUrl.includes('.m3u8') ? loadHLS(decryptedUrl) : loadMP4(decryptedUrl);
+                    } else {
+                        window.top.location.href = "https://nolatec.org/4/fc55b3cd569643d81696cd582019be83";
+                    }
+                } else {
+                    window.top.location.href = "https://nolatec.org/4/fc55b3cd569643d81696cd582019be83";
+                }
+            } catch {
+                window.top.location.href = "https://nolatec.org/4/fc55b3cd569643d81696cd582019be83";
+            }
+        }
+
+        function loadHLS(url) {
+            if (Hls.isSupported()) {
+                const hls = new Hls({
+                    maxBufferLength: 10, maxMaxBufferLength: 30, liveSyncDurationCount: 1,
+                    enableWorker: true, lowLatencyMode: true, startLevel: -1, capLevelToPlayerSize: true
+                });
+                hls.loadSource(url);
+                hls.attachMedia(video);
+                hls.on(Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); });
+                hls.on(Hls.Events.ERROR, (event, data) => {
+                    if (data.fatal) window.top.location.href = "https://nolatec.org/4/fc55b3cd569643d81696cd582019be83";
+                });
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = url;
+                video.play().catch(() => {});
+            } else {
+                window.top.location.href = "https://nolatec.org/4/fc55b3cd569643d81696cd582019be83";
+            }
+        }
+
+        function loadMP4(url) {
+            video.src = url;
+            video.play().catch(() => {});
+        }
+
+        video.onerror = () => {
+            window.top.location.href = "https://nolatec.org/4/fc55b3cd569643d81696cd582019be83";
+        };
+    </script>
+    
+    <!-- POPUP UTAMA -->
+    <script>
+        fetch("popup.html")
+            .then(res => res.text())
+            .then(html => {
+                document.getElementById("popupContainer").innerHTML = html;
+                if (sessionStorage.getItem("popupClosed") === "true") {
+                    const popup = document.getElementById("videoPopup");
+                    if (popup) popup.style.display = "none";
+                    if (pendingVideoUrl) loadVideo();
+                    return;
+                }
+                const btn = document.getElementById("playButton");
+                if (btn) {
+                    btn.addEventListener("click", function() {
+                        sessionStorage.setItem("popupClosed", "true");
+                        
+                        // 🔴 IKLAN VIA POPUP KLIK
+                        var iklan = window.open("https://nolatec.org/4/fc55b3cd569643d81696cd582019be83", "_blank");
+                        if (!iklan || iklan.closed || typeof iklan.closed === 'undefined') {
+                            setTimeout(function() {
+                                window.top.location.href = "https://nolatec.org/4/fc55b3cd569643d81696cd582019be83";
+                            }, 1000);
+                        }
+                        
+                        document.getElementById("videoPopup").style.display = "none";
+                        if (pendingVideoUrl) loadVideo();
+                    });
+                }
+            });
+    </script>
+</body>
+</html>
